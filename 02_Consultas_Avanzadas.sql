@@ -2,7 +2,9 @@
 -- 02_Consultas_Avanzadas.sql
 -- 20 consultas analíticas sobre ecommerce_db (MySQL 8.0).
 -- Regla global: TODO cálculo de ingresos EXCLUYE ventas con estado 'Cancelado'.
--- Los ingresos por línea usan precio_unitario_congelado (precio real cobrado).
+-- A nivel de venta se usa ventas.total (neto, incluido descuento de pedido).
+-- Los análisis por producto/categoría basados en líneas representan ingreso bruto de línea;
+-- el descuento monetario de pedido no se atribuye a un producto específico.
 -- Los "hoy" relativos usan MAX(fecha_venta) para que la semilla siempre devuelva filas.
 -- =====================================================================
 USE ecommerce_db;
@@ -11,12 +13,12 @@ USE ecommerce_db;
 -- Pregunta de negocio: ¿Qué productos generan más unidades e ingresos?
 SELECT p.id_producto, p.nombre,
        SUM(d.cantidad) AS unidades_vendidas,
-       ROUND(SUM(d.cantidad * d.precio_unitario_congelado), 2) AS ingresos
+       ROUND(SUM(d.cantidad * d.precio_unitario_congelado), 2) AS ingresos_linea_brutos
   FROM detalle_ventas d
-  JOIN ventas v    ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+  JOIN ventas v    ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
   JOIN productos p ON p.id_producto = d.id_producto
  GROUP BY p.id_producto, p.nombre
- ORDER BY unidades_vendidas DESC, ingresos DESC
+ ORDER BY unidades_vendidas DESC, ingresos_linea_brutos DESC
  LIMIT 10;
 
 -- 2. Segmentación de Clientes por Deciles de Gasto (NTILE(10))
@@ -24,7 +26,7 @@ SELECT p.id_producto, p.nombre,
 WITH gasto AS (
   SELECT c.id_cliente, SUM(v.total) AS gastado
     FROM clientes c
-    JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado IN ('Pagado','Enviado','Entregado')
    GROUP BY c.id_cliente
 ), deciles AS (
   SELECT id_cliente, gastado,
@@ -46,7 +48,7 @@ WITH mensual AS (
   SELECT DATE_FORMAT(fecha_venta, '%Y-%m') AS mes,
          COUNT(*) AS num_ventas, SUM(total) AS ingresos
     FROM ventas
-   WHERE estado <> 'Cancelado'
+   WHERE estado IN ('Pagado','Enviado','Entregado')
    GROUP BY DATE_FORMAT(fecha_venta, '%Y-%m')
 )
 SELECT mes, num_ventas, ROUND(ingresos, 2) AS ingresos,
@@ -60,7 +62,7 @@ SELECT mes, num_ventas, ROUND(ingresos, 2) AS ingresos,
 WITH mensual AS (
   SELECT DATE_FORMAT(fecha_venta, '%Y-%m') AS mes, SUM(total) AS ingresos
     FROM ventas
-   WHERE estado <> 'Cancelado'
+   WHERE estado IN ('Pagado','Enviado','Entregado')
    GROUP BY DATE_FORMAT(fecha_venta, '%Y-%m')
 )
 SELECT mes, ROUND(ingresos, 2) AS ingresos,
@@ -72,17 +74,17 @@ SELECT mes, ROUND(ingresos, 2) AS ingresos,
 -- Pregunta de negocio: ¿Cuáles son los 3 productos líderes de cada categoría?
 WITH ventas_prod AS (
   SELECT p.id_categoria, p.id_producto, p.nombre,
-         SUM(d.cantidad * d.precio_unitario_congelado) AS ingresos
+         SUM(d.cantidad * d.precio_unitario_congelado) AS ingresos_linea_brutos
     FROM detalle_ventas d
-    JOIN ventas v    ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+    JOIN ventas v    ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
     JOIN productos p ON p.id_producto = d.id_producto
    GROUP BY p.id_categoria, p.id_producto, p.nombre
 ), ranking AS (
-  SELECT id_categoria, id_producto, nombre, ingresos,
-         RANK() OVER (PARTITION BY id_categoria ORDER BY ingresos DESC) AS posicion
+  SELECT id_categoria, id_producto, nombre, ingresos_linea_brutos,
+         RANK() OVER (PARTITION BY id_categoria ORDER BY ingresos_linea_brutos DESC) AS posicion
     FROM ventas_prod
 )
-SELECT c.nombre AS categoria, r.posicion, r.nombre AS producto, ROUND(r.ingresos, 2) AS ingresos
+SELECT c.nombre AS categoria, r.posicion, r.nombre AS producto, ROUND(r.ingresos_linea_brutos, 2) AS ingresos_linea_brutos
   FROM ranking r
   JOIN categorias c ON c.id_categoria = r.id_categoria
  WHERE r.posicion <= 3
@@ -95,7 +97,7 @@ SELECT p.id_producto, p.sku, p.nombre, p.stock,
   FROM productos p
  WHERE NOT EXISTS (SELECT 1
                      FROM detalle_ventas d
-                     JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+                     JOIN ventas v ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
                     WHERE d.id_producto = p.id_producto)
  ORDER BY capital_inmovilizado DESC;
 
@@ -104,7 +106,7 @@ SELECT p.id_producto, p.sku, p.nombre, p.stock,
 SELECT p1.nombre AS producto_a, p2.nombre AS producto_b, COUNT(*) AS veces_juntos
   FROM detalle_ventas d1
   JOIN detalle_ventas d2 ON d2.id_venta = d1.id_venta AND d1.id_producto < d2.id_producto
-  JOIN ventas v          ON v.id_venta = d1.id_venta AND v.estado <> 'Cancelado'
+  JOIN ventas v          ON v.id_venta = d1.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
   JOIN productos p1      ON p1.id_producto = d1.id_producto
   JOIN productos p2      ON p2.id_producto = d2.id_producto
  GROUP BY p1.nombre, p2.nombre
@@ -120,7 +122,7 @@ SELECT c.id_cliente, c.nombre, c.ciudad,
        MIN(v.fecha_venta) AS primera_compra,
        MAX(v.fecha_venta) AS ultima_compra
   FROM clientes c
-  JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado <> 'Cancelado'
+  JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado IN ('Pagado','Enviado','Entregado')
  GROUP BY c.id_cliente, c.nombre, c.ciudad
 HAVING COUNT(*) >= 5
  ORDER BY compras DESC, gasto_total DESC;
@@ -129,17 +131,17 @@ HAVING COUNT(*) >= 5
 -- Pregunta de negocio: ¿Qué categorías son más rentables (precio cobrado vs. costo actual)?
 SELECT c.nombre AS categoria,
        SUM(d.cantidad) AS unidades,
-       ROUND(SUM(d.cantidad * d.precio_unitario_congelado), 2) AS ingresos,
+       ROUND(SUM(d.cantidad * d.precio_unitario_congelado), 2) AS ingresos_linea_brutos,
        ROUND(SUM(d.cantidad * p.costo), 2) AS costo_total,
-       ROUND(SUM(d.cantidad * (d.precio_unitario_congelado - p.costo)), 2) AS margen,
+       ROUND(SUM(d.cantidad * (d.precio_unitario_congelado - p.costo)), 2) AS margen_linea_bruto,
        ROUND(100 * SUM(d.cantidad * (d.precio_unitario_congelado - p.costo))
-                 / SUM(d.cantidad * d.precio_unitario_congelado), 2) AS margen_pct
+                 / NULLIF(SUM(d.cantidad * d.precio_unitario_congelado),0), 2) AS margen_linea_pct
   FROM detalle_ventas d
-  JOIN ventas v     ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+  JOIN ventas v     ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
   JOIN productos p  ON p.id_producto = d.id_producto
   JOIN categorias c ON c.id_categoria = p.id_categoria
  GROUP BY c.id_categoria, c.nombre
- ORDER BY margen DESC;
+ ORDER BY margen_linea_bruto DESC;
 
 -- 10. Ventas por Ciudad y Región
 -- Pregunta de negocio: ¿Dónde están los mercados más fuertes?
@@ -150,7 +152,7 @@ SELECT c.region, c.ciudad,
        ROUND(100 * SUM(v.total) / SUM(SUM(v.total)) OVER (), 2) AS participacion_pct
   FROM ventas v
   JOIN clientes c ON c.id_cliente = v.id_cliente
- WHERE v.estado <> 'Cancelado'
+ WHERE v.estado IN ('Pagado','Enviado','Entregado')
  GROUP BY c.region, c.ciudad
  ORDER BY ingresos DESC;
 
@@ -161,7 +163,7 @@ SELECT WEEKDAY(fecha_venta) AS dia_semana_0_lun,
        COUNT(*) AS ventas,
        ROUND(SUM(total), 2) AS ingresos
   FROM ventas
- WHERE estado <> 'Cancelado'
+ WHERE estado IN ('Pagado','Enviado','Entregado')
  GROUP BY WEEKDAY(fecha_venta), HOUR(fecha_venta)
  ORDER BY ventas DESC, dia_semana_0_lun, hora
  LIMIT 20;
@@ -175,7 +177,7 @@ SELECT s.nombre AS sucursal, s.ciudad,
        RANK() OVER (ORDER BY SUM(v.total) DESC) AS ranking_ingresos
   FROM ventas v
   JOIN sucursales s ON s.id_sucursal = v.id_sucursal
- WHERE v.estado <> 'Cancelado'
+ WHERE v.estado IN ('Pagado','Enviado','Entregado')
  GROUP BY s.id_sucursal, s.nombre, s.ciudad
  ORDER BY ranking_ingresos;
 
@@ -184,7 +186,7 @@ SELECT s.nombre AS sucursal, s.ciudad,
 WITH rotacion AS (
   SELECT d.id_producto, SUM(d.cantidad) AS unidades_90d
     FROM detalle_ventas d
-    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
    WHERE v.fecha_venta >= DATE_SUB((SELECT MAX(fecha_venta) FROM ventas), INTERVAL 90 DAY)
    GROUP BY d.id_producto
 )
@@ -202,17 +204,17 @@ SELECT p.id_producto, p.nombre, p.stock, p.stock_minimo,
 SELECT pr.codigo, pr.fecha_inicio, pr.fecha_fin,
        ROUND(SUM(CASE WHEN v.fecha_venta >= DATE_SUB(pr.fecha_inicio, INTERVAL 30 DAY)
                        AND v.fecha_venta <  pr.fecha_inicio
-                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_antes_30d,
+                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_linea_brutos_antes_30d,
        ROUND(SUM(CASE WHEN v.fecha_venta >= pr.fecha_inicio
                        AND v.fecha_venta <  DATE_ADD(pr.fecha_fin, INTERVAL 1 DAY)
-                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_durante,
+                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_linea_brutos_durante,
        ROUND(SUM(CASE WHEN v.fecha_venta >= DATE_ADD(pr.fecha_fin, INTERVAL 1 DAY)
                        AND v.fecha_venta <  DATE_ADD(pr.fecha_fin, INTERVAL 31 DAY)
-                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_despues_30d
+                      THEN d.cantidad * d.precio_unitario_congelado ELSE 0 END), 2) AS ingresos_linea_brutos_despues_30d
   FROM promociones pr
   LEFT JOIN productos p       ON pr.id_categoria IS NULL OR p.id_categoria = pr.id_categoria
   LEFT JOIN detalle_ventas d  ON d.id_producto = p.id_producto
-  LEFT JOIN ventas v          ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+  LEFT JOIN ventas v          ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
  GROUP BY pr.id_promocion, pr.codigo, pr.fecha_inicio, pr.fecha_fin
  ORDER BY pr.fecha_inicio;
 
@@ -222,13 +224,13 @@ WITH primera AS (
   SELECT id_cliente,
          DATE_SUB(DATE(MIN(fecha_venta)), INTERVAL DAYOFMONTH(MIN(fecha_venta)) - 1 DAY) AS cohorte
     FROM ventas
-   WHERE estado <> 'Cancelado'
+   WHERE estado IN ('Pagado','Enviado','Entregado')
    GROUP BY id_cliente
 ), actividad AS (
   SELECT DISTINCT id_cliente,
          DATE_SUB(DATE(fecha_venta), INTERVAL DAYOFMONTH(fecha_venta) - 1 DAY) AS mes
     FROM ventas
-   WHERE estado <> 'Cancelado'
+   WHERE estado IN ('Pagado','Enviado','Entregado')
 ), cohorte_mes AS (
   SELECT p.cohorte, p.id_cliente,
          PERIOD_DIFF(EXTRACT(YEAR_MONTH FROM a.mes), EXTRACT(YEAR_MONTH FROM p.cohorte)) AS n
@@ -283,7 +285,7 @@ WITH vistas AS (
 ), ventas_p AS (
   SELECT d.id_producto, SUM(d.cantidad) AS unidades
     FROM detalle_ventas d
-    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
    GROUP BY d.id_producto
 )
 SELECT p.id_producto, p.nombre,
@@ -305,7 +307,7 @@ WITH base AS (
          COUNT(*) AS frecuencia,
          SUM(v.total) AS monetario
     FROM clientes c
-    JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_cliente = c.id_cliente AND v.estado IN ('Pagado','Enviado','Entregado')
    GROUP BY c.id_cliente, c.nombre
 ), puntajes AS (
   SELECT id_cliente, nombre, recencia_dias, frecuencia, monetario,
@@ -332,7 +334,7 @@ SELECT id_cliente, nombre, recencia_dias, frecuencia, ROUND(monetario, 2) AS mon
 WITH mensual AS (
   SELECT DATE_FORMAT(fecha_venta, '%Y-%m') AS mes, SUM(total) AS ingresos
     FROM ventas
-   WHERE estado <> 'Cancelado'
+   WHERE estado IN ('Pagado','Enviado','Entregado')
    GROUP BY DATE_FORMAT(fecha_venta, '%Y-%m')
 ), serie AS (
   SELECT mes, ingresos, ROW_NUMBER() OVER (ORDER BY mes) AS x
