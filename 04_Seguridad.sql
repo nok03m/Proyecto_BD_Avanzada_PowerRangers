@@ -5,8 +5,8 @@
 -- funciones (03/07) y las vistas (01).
 -- Ejecutar como un administrador conectado por localhost (ver requisito 3).
 -- Principio de mínimo privilegio: cada rol recibe solo lo que necesita.
--- Las contraseñas de este archivo son PLACEHOLDERS: las cuentas nacen con la contraseña
--- expirada y deben cambiarla en el primer inicio de sesión. MySQL guarda solo el hash.
+-- Las cuentas operativas se crean bloqueadas y expiradas; las contraseñas reales se
+-- provisionan fuera del repositorio. Las contraseñas de clientes se almacenan como hashes PHC generados por la aplicación.
 -- Requisitos que dependen de la configuración del servidor están marcados con [SERVIDOR].
 -- =====================================================================
 USE ecommerce_db;
@@ -59,20 +59,27 @@ CREATE ROLE 'Administrador_Sistema', 'Gerente_Marketing', 'Analista_Datos',
             'Empleado_Inventario', 'Atencion_Cliente', 'Auditor_Financiero', 'Visitante';
 
 -- ---------------------------------------------------------------------
--- 5. Crear usuarios: admin_user, marketing_user, inventory_user, support_user
--- (+ analyst_user, cuenta adicional necesaria porque los límites de consultas son por cuenta).
--- Contraseña expirada de inmediato, 5 intentos fallidos => bloqueo de 1 día.
+-- 5. Crear usuarios sin credenciales hardcodeadas en el repositorio.
+-- Las cuentas nacen bloqueadas y expiradas; el administrador debe asignar una
+-- contraseña segura fuera del repositorio y desbloquearlas de forma controlada.
 -- ---------------------------------------------------------------------
-CREATE USER 'admin_user'@'localhost' IDENTIFIED BY 'Cambiar#Admin2026!'
-  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1 PASSWORD EXPIRE;
-CREATE USER 'marketing_user'@'localhost' IDENTIFIED BY 'Cambiar#Market2026!'
-  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1 PASSWORD EXPIRE;
-CREATE USER 'inventory_user'@'localhost' IDENTIFIED BY 'Cambiar#Invent2026!'
-  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1 PASSWORD EXPIRE;
-CREATE USER 'support_user'@'localhost' IDENTIFIED BY 'Cambiar#Soporte2026!'
-  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1 PASSWORD EXPIRE;
-CREATE USER 'analyst_user'@'localhost' IDENTIFIED BY 'Cambiar#Analisis2026!'
-  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1 PASSWORD EXPIRE;
+CREATE USER 'admin_user'@'localhost' IDENTIFIED BY RANDOM PASSWORD ACCOUNT LOCK PASSWORD EXPIRE
+  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1;
+CREATE USER 'marketing_user'@'localhost' IDENTIFIED BY RANDOM PASSWORD ACCOUNT LOCK PASSWORD EXPIRE
+  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1;
+CREATE USER 'inventory_user'@'localhost' IDENTIFIED BY RANDOM PASSWORD ACCOUNT LOCK PASSWORD EXPIRE
+  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1;
+CREATE USER 'support_user'@'localhost' IDENTIFIED BY RANDOM PASSWORD ACCOUNT LOCK PASSWORD EXPIRE
+  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1;
+CREATE USER 'analyst_user'@'localhost' IDENTIFIED BY RANDOM PASSWORD ACCOUNT LOCK PASSWORD EXPIRE
+  FAILED_LOGIN_ATTEMPTS 5 PASSWORD_LOCK_TIME 1;
+
+-- Asignación de secretos fuera del repositorio (ejecutar manualmente):
+-- ALTER USER 'admin_user'@'localhost' IDENTIFIED BY '<SECRETO_SEGURO>' ACCOUNT UNLOCK;
+-- ALTER USER 'marketing_user'@'localhost' IDENTIFIED BY '<SECRETO_SEGURO>' ACCOUNT UNLOCK;
+-- ALTER USER 'inventory_user'@'localhost' IDENTIFIED BY '<SECRETO_SEGURO>' ACCOUNT UNLOCK;
+-- ALTER USER 'support_user'@'localhost' IDENTIFIED BY '<SECRETO_SEGURO>' ACCOUNT UNLOCK;
+-- ALTER USER 'analyst_user'@'localhost' IDENTIFIED BY '<SECRETO_SEGURO>' ACCOUNT UNLOCK;
 
 -- ---------------------------------------------------------------------
 -- 6. Administrador_Sistema: control total sobre la base (sin WITH GRANT OPTION)
@@ -82,17 +89,15 @@ GRANT ALL PRIVILEGES ON ecommerce_db.* TO 'Administrador_Sistema';
 -- ---------------------------------------------------------------------
 -- 7. Gerente_Marketing: catálogo, promociones, comportamiento y KPIs; sin datos personales
 -- ---------------------------------------------------------------------
-GRANT SELECT ON ecommerce_db.productos            TO 'Gerente_Marketing';
+GRANT SELECT (id_producto, sku, nombre, descripcion, precio, id_categoria, activo)
+  ON ecommerce_db.productos TO 'Gerente_Marketing';
 GRANT SELECT ON ecommerce_db.categorias           TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.resenas_producto     TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.vistas_producto      TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.carritos             TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.carrito_items        TO 'Gerente_Marketing';
+GRANT SELECT ON ecommerce_db.v_resenas_publicas   TO 'Gerente_Marketing';
 GRANT SELECT ON ecommerce_db.ranking_productos    TO 'Gerente_Marketing';
 GRANT SELECT ON ecommerce_db.kpis_mensuales       TO 'Gerente_Marketing';
+GRANT SELECT ON ecommerce_db.v_comportamiento_marketing TO 'Gerente_Marketing';
 GRANT SELECT ON ecommerce_db.resumen_ventas_diarias TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.v_info_clientes_basica TO 'Gerente_Marketing';
-GRANT SELECT, INSERT, UPDATE ON ecommerce_db.promociones TO 'Gerente_Marketing';
+GRANT SELECT ON ecommerce_db.promociones TO 'Gerente_Marketing';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_CrearPromocion TO 'Gerente_Marketing';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_TopClientes    TO 'Gerente_Marketing';
 
@@ -100,30 +105,26 @@ GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_TopClientes    TO 'Gerente_Marketing'
 -- 8. Analista_Datos: solo lectura. No recibe DELETE, TRUNCATE (DROP), INSERT ni UPDATE.
 -- En clientes solo columnas no sensibles (sin email, password_hash ni direccion).
 -- ---------------------------------------------------------------------
-GRANT SELECT ON ecommerce_db.ventas                  TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.detalle_ventas          TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.productos               TO 'Analista_Datos';
+GRANT SELECT ON ecommerce_db.v_ventas_analista        TO 'Analista_Datos';
+GRANT SELECT ON ecommerce_db.v_detalle_ventas_analista TO 'Analista_Datos';
+GRANT SELECT ON ecommerce_db.v_clientes_analista      TO 'Analista_Datos';
+GRANT SELECT (id_producto, sku, nombre, descripcion, precio, costo, stock, stock_minimo,
+              peso, ubicacion, id_categoria, id_proveedor, activo)
+  ON ecommerce_db.productos TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.categorias              TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.proveedores             TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.sucursales              TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.promociones             TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.carritos                TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.carrito_items           TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.vistas_producto         TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.resenas_producto        TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.pagos                   TO 'Analista_Datos';
-GRANT SELECT ON ecommerce_db.devoluciones            TO 'Analista_Datos';
+GRANT SELECT ON ecommerce_db.v_comportamiento_marketing TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.resumen_ventas_diarias  TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.ranking_productos       TO 'Analista_Datos';
 GRANT SELECT ON ecommerce_db.kpis_mensuales          TO 'Analista_Datos';
-GRANT SELECT (id_cliente, nombre, fecha_nacimiento, ciudad, region, id_sucursal,
-              total_gastado, fecha_ultimo_pedido, referido_por, activo, fecha_registro)
-  ON ecommerce_db.clientes TO 'Analista_Datos';
+GRANT SELECT ON ecommerce_db.v_resenas_publicas      TO 'Analista_Datos';
 
 -- ---------------------------------------------------------------------
 -- 9. Empleado_Inventario: lectura de inventario y ajuste controlado por procedimiento
 -- ---------------------------------------------------------------------
-GRANT SELECT ON ecommerce_db.productos                 TO 'Empleado_Inventario';
+GRANT SELECT (id_producto, sku, nombre, stock, stock_minimo, ubicacion, activo, peso)
+  ON ecommerce_db.productos TO 'Empleado_Inventario';
 GRANT SELECT ON ecommerce_db.categorias                TO 'Empleado_Inventario';
 GRANT SELECT ON ecommerce_db.proveedores               TO 'Empleado_Inventario';
 GRANT SELECT ON ecommerce_db.ajustes_stock             TO 'Empleado_Inventario';
@@ -132,17 +133,16 @@ GRANT SELECT ON ecommerce_db.alertas                   TO 'Empleado_Inventario';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_AjustarStock TO 'Empleado_Inventario';
 
 -- ---------------------------------------------------------------------
--- 10. Permiso a nivel de columna: Empleado_Inventario solo puede modificar stock y ubicacion.
--- No tiene UPDATE sobre precio, costo ni ninguna otra columna de productos.
+-- 10. Inventario: no hay UPDATE directo sobre productos. Todo ajuste de stock pasa por sp_AjustarStock,
+-- que bloquea la fila, valida el resultado y registra la operación en ajustes_stock.
 -- ---------------------------------------------------------------------
-GRANT UPDATE (stock, ubicacion) ON ecommerce_db.productos TO 'Empleado_Inventario';
 
 -- ---------------------------------------------------------------------
 -- 11. Atencion_Cliente: vista de clientes SIN email, contraseña ni dirección, y
 --     operaciones de servicio mediante procedimientos (no accede a la tabla clientes).
 -- ---------------------------------------------------------------------
-GRANT SELECT ON ecommerce_db.v_info_clientes_basica TO 'Atencion_Cliente';
-GRANT SELECT ON ecommerce_db.devoluciones           TO 'Atencion_Cliente';
+GRANT SELECT ON ecommerce_db.v_clientes_sucursal TO 'Atencion_Cliente';
+GRANT SELECT ON ecommerce_db.v_devoluciones_sucursal TO 'Atencion_Cliente';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_ObtenerHistorialCliente TO 'Atencion_Cliente';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_ActualizarEstadoPedido  TO 'Atencion_Cliente';
 GRANT EXECUTE ON PROCEDURE ecommerce_db.sp_CancelarPedido          TO 'Atencion_Cliente';
@@ -175,7 +175,7 @@ GRANT SELECT (id_producto, sku, nombre, precio, costo, stock, id_categoria, id_p
 GRANT SELECT (id_producto, nombre, descripcion, precio, id_categoria, activo)
   ON ecommerce_db.productos TO 'Visitante';
 GRANT SELECT ON ecommerce_db.categorias       TO 'Visitante';
-GRANT SELECT ON ecommerce_db.resenas_producto TO 'Visitante';
+GRANT SELECT ON ecommerce_db.v_resenas_publicas TO 'Visitante';
 
 -- ---------------------------------------------------------------------
 -- 14. Asignar roles a los usuarios y fijar el rol por defecto
@@ -208,8 +208,6 @@ ALTER USER 'analyst_user'@'localhost'
 -- ---------------------------------------------------------------------
 GRANT SELECT ON ecommerce_db.v_ventas_sucursal   TO 'Atencion_Cliente';
 GRANT SELECT ON ecommerce_db.v_clientes_sucursal TO 'Atencion_Cliente';
-GRANT SELECT ON ecommerce_db.v_ventas_sucursal   TO 'Gerente_Marketing';
-GRANT SELECT ON ecommerce_db.v_clientes_sucursal TO 'Gerente_Marketing';
 GRANT SELECT ON ecommerce_db.v_ventas_sucursal   TO 'Empleado_Inventario';
 
 -- ---------------------------------------------------------------------
@@ -228,12 +226,12 @@ GRANT SELECT ON ecommerce_db.v_ventas_sucursal   TO 'Empleado_Inventario';
 -- LIMITACIÓN: sin (c) ni (d) no queda un historial persistente por intento; se documenta.
 -- ---------------------------------------------------------------------
 INSERT INTO log_permisos (usuario, accion, detalle)
-VALUES (CURRENT_USER(), 'AUDITORIA_LOGIN', 'Bloqueo tras 5 fallos activo; auditoria completa requiere audit_log (Enterprise) o CONNECTION_CONTROL');
+VALUES (USER(), 'AUDITORIA_LOGIN', 'Bloqueo tras 5 fallos activo; auditoria completa requiere audit_log (Enterprise) o CONNECTION_CONTROL');
 
 -- ---------------------------------------------------------------------
 -- 18. Permisos de EXECUTE sobre funciones (solo las de consulta que cada rol necesita)
--- Las rutinas se ejecutan con los privilegios de su definidor (SQL SECURITY DEFINER por
--- defecto), por lo que basta EXECUTE; el rol no necesita acceso a las tablas internas.
+-- Las funciones de consulta permanecen en SQL SECURITY DEFINER para no romper dependencias internas;
+-- EXECUTE se concede únicamente a roles que necesitan esas métricas y el acceso directo a sus fuentes.
 -- ---------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION ecommerce_db.fn_CalcularTotalVenta   TO 'Analista_Datos';
 GRANT EXECUTE ON FUNCTION ecommerce_db.fn_MargenProducto       TO 'Analista_Datos';
@@ -249,10 +247,10 @@ GRANT EXECUTE ON FUNCTION ecommerce_db.fn_DiasParaAgotar       TO 'Empleado_Inve
 -- 19. Registro de la configuración de seguridad aplicada (bitácora log_permisos)
 -- ---------------------------------------------------------------------
 INSERT INTO log_permisos (usuario, accion, detalle) VALUES
- (CURRENT_USER(), 'CREAR_ROLES',    '7 roles creados'),
- (CURRENT_USER(), 'CREAR_USUARIOS', 'admin_user, marketing_user, inventory_user, support_user, analyst_user'),
- (CURRENT_USER(), 'GRANTS',         'Permisos por rol aplicados; UPDATE(stock, ubicacion) solo para Empleado_Inventario'),
- (CURRENT_USER(), 'ROOT_LOCAL',     'Cuenta root@% eliminada; root restringido a localhost');
+ (USER(), 'CREAR_ROLES',    '7 roles creados'),
+ (USER(), 'CREAR_USUARIOS', 'admin_user, marketing_user, inventory_user, support_user, analyst_user'),
+ (USER(), 'GRANTS',         'Permisos por rol aplicados; stock y ubicacion no tienen UPDATE directo para inventario'),
+ (USER(), 'ROOT_LOCAL',     'Cuenta root@% eliminada; root restringido a localhost');
 
 -- ---------------------------------------------------------------------
 -- 20. Verificación de privilegios efectivos
