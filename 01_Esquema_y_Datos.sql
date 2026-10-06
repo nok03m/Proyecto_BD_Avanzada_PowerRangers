@@ -78,7 +78,7 @@ CREATE TABLE clientes (
   id_cliente          INT AUTO_INCREMENT PRIMARY KEY,
   nombre              VARCHAR(100) NOT NULL,
   email               VARCHAR(120) NOT NULL UNIQUE,
-  password_hash       CHAR(64) NOT NULL,                    -- solo hash SHA-256
+  password_hash       VARCHAR(255) NOT NULL,                -- hash PHC generado por la aplicación (Argon2id/bcrypt)
   direccion           VARCHAR(200) NULL,
   fecha_nacimiento    DATE NULL,
   ciudad              VARCHAR(60) NULL,
@@ -91,7 +91,7 @@ CREATE TABLE clientes (
   fecha_registro      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT chk_cli_gastado CHECK (total_gastado >= 0),
   CONSTRAINT fk_cli_suc FOREIGN KEY (id_sucursal)
-    REFERENCES sucursales(id_sucursal) ON DELETE SET NULL ON UPDATE CASCADE,
+    REFERENCES sucursales(id_sucursal) ON DELETE SET NULL ON UPDATE RESTRICT,
   CONSTRAINT fk_cli_ref FOREIGN KEY (referido_por)
     REFERENCES clientes(id_cliente) ON DELETE SET NULL ON UPDATE CASCADE,
   INDEX idx_cli_ciudad (ciudad),
@@ -99,23 +99,27 @@ CREATE TABLE clientes (
 ) ENGINE=InnoDB;
 
 CREATE TABLE ventas (
-  id_venta    INT AUTO_INCREMENT PRIMARY KEY,
-  id_cliente  INT NOT NULL,
-  id_sucursal INT NULL,
-  fecha_venta TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  estado      ENUM('Pendiente','Pagado','Enviado','Entregado','Cancelado','Devuelto')
-              NOT NULL DEFAULT 'Pendiente',
-  total       DECIMAL(12,2) NOT NULL DEFAULT 0,
-  costo_envio DECIMAL(12,2) NOT NULL DEFAULT 0,
+  id_venta        INT AUTO_INCREMENT PRIMARY KEY,
+  id_cliente      INT NOT NULL,
+  id_sucursal     INT NOT NULL,
+  fecha_venta     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  estado          ENUM('Pendiente','Pagado','Enviado','Entregado','Cancelado','Devuelto')
+                  NOT NULL DEFAULT 'Pendiente',
+  total           DECIMAL(12,2) NOT NULL DEFAULT 0,
+  descuento_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+  costo_envio     DECIMAL(12,2) NOT NULL DEFAULT 0,
+  control_stock   ENUM('Historico','Integrado') NOT NULL DEFAULT 'Integrado',
   CONSTRAINT chk_ven_total CHECK (total >= 0),
+  CONSTRAINT chk_ven_descuento CHECK (descuento_total >= 0),
   CONSTRAINT chk_ven_envio CHECK (costo_envio >= 0),
   CONSTRAINT fk_ven_cli FOREIGN KEY (id_cliente)
     REFERENCES clientes(id_cliente) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT fk_ven_suc FOREIGN KEY (id_sucursal)
-    REFERENCES sucursales(id_sucursal) ON DELETE SET NULL ON UPDATE CASCADE,
+    REFERENCES sucursales(id_sucursal) ON DELETE RESTRICT ON UPDATE RESTRICT,
   INDEX idx_ven_fecha (fecha_venta),
   INDEX idx_ven_estado (estado),
-  INDEX idx_ven_suc (id_sucursal)
+  INDEX idx_ven_suc_fecha (id_sucursal, fecha_venta),
+  INDEX idx_ven_cli_fecha (id_cliente, fecha_venta)
 ) ENGINE=InnoDB;
 
 -- Relacion N:M ventas <-> productos
@@ -123,13 +127,18 @@ CREATE TABLE detalle_ventas (
   id_detalle                INT AUTO_INCREMENT PRIMARY KEY,
   id_venta                  INT NOT NULL,
   id_producto               INT NOT NULL,
-  cantidad                  INT NOT NULL,
-  precio_unitario_congelado DECIMAL(12,2) NOT NULL,         -- precio al momento de la venta
-  CONSTRAINT chk_det_cant   CHECK (cantidad > 0),
-  CONSTRAINT chk_det_precio CHECK (precio_unitario_congelado > 0),
+  cantidad                     INT NOT NULL,
+  precio_lista_congelado         DECIMAL(12,2) NOT NULL,       -- precio de lista al momento de la venta
+  descuento_unitario_congelado   DECIMAL(12,2) NOT NULL DEFAULT 0,
+  precio_unitario_congelado      DECIMAL(12,2) NOT NULL,       -- precio final al momento de la venta
+  CONSTRAINT chk_det_cant       CHECK (cantidad > 0),
+  CONSTRAINT chk_det_lista      CHECK (precio_lista_congelado > 0),
+  CONSTRAINT chk_det_descuento  CHECK (descuento_unitario_congelado >= 0 AND descuento_unitario_congelado <= precio_lista_congelado),
+  CONSTRAINT chk_det_precio     CHECK (precio_unitario_congelado > 0),
+  CONSTRAINT chk_det_precio_consistente CHECK (precio_unitario_congelado + descuento_unitario_congelado = precio_lista_congelado),
   CONSTRAINT uq_det_venta_prod UNIQUE (id_venta, id_producto),
   CONSTRAINT fk_det_venta FOREIGN KEY (id_venta)
-    REFERENCES ventas(id_venta) ON DELETE CASCADE ON UPDATE CASCADE,
+    REFERENCES ventas(id_venta) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT fk_det_prod FOREIGN KEY (id_producto)
     REFERENCES productos(id_producto) ON DELETE RESTRICT ON UPDATE CASCADE,
   INDEX idx_det_prod (id_producto)
@@ -150,6 +159,7 @@ CREATE TABLE promociones (
   id_categoria INT NULL,
   activa       BOOLEAN NOT NULL DEFAULT TRUE,
   CONSTRAINT chk_promo_valor CHECK (valor > 0),
+  CONSTRAINT chk_promo_porcentaje CHECK (tipo <> 'Porcentaje' OR valor < 100),
   CONSTRAINT chk_promo_fechas CHECK (fecha_fin >= fecha_inicio),
   CONSTRAINT fk_promo_cat FOREIGN KEY (id_categoria)
     REFERENCES categorias(id_categoria) ON DELETE SET NULL ON UPDATE CASCADE,
@@ -164,7 +174,7 @@ CREATE TABLE carritos (
   fecha_actualizacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_car_cli FOREIGN KEY (id_cliente)
     REFERENCES clientes(id_cliente) ON DELETE CASCADE ON UPDATE CASCADE,
-  INDEX idx_car_estado (estado)
+  INDEX idx_car_estado_fecha (estado, fecha_actualizacion)
 ) ENGINE=InnoDB;
 
 CREATE TABLE carrito_items (
@@ -176,7 +186,7 @@ CREATE TABLE carrito_items (
   CONSTRAINT fk_ci_car FOREIGN KEY (id_carrito)
     REFERENCES carritos(id_carrito) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT fk_ci_prod FOREIGN KEY (id_producto)
-    REFERENCES productos(id_producto) ON DELETE CASCADE ON UPDATE CASCADE,
+    REFERENCES productos(id_producto) ON DELETE RESTRICT ON UPDATE CASCADE,
   INDEX idx_ci_prod (id_producto)
 ) ENGINE=InnoDB;
 
@@ -215,13 +225,15 @@ CREATE TABLE pagos (
   id_venta   INT NOT NULL,
   monto      DECIMAL(12,2) NOT NULL,
   metodo     ENUM('Tarjeta','PSE','Efectivo','Transferencia') NOT NULL,
-  estado     ENUM('Aprobado','Rechazado','Pendiente') NOT NULL DEFAULT 'Pendiente',
-  referencia VARCHAR(40) NULL,
-  fecha_pago TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT chk_pago_monto CHECK (monto >= 0),
+  estado              ENUM('Aprobado','Rechazado','Pendiente','Reembolsado') NOT NULL DEFAULT 'Pendiente',
+  monto_reembolsado   DECIMAL(12,2) NOT NULL DEFAULT 0,
+  referencia          VARCHAR(40) NULL,
+  fecha_pago          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_pago_monto CHECK (monto > 0),
+  CONSTRAINT chk_pago_reembolso CHECK (monto_reembolsado >= 0 AND monto_reembolsado <= monto),
   CONSTRAINT fk_pago_venta FOREIGN KEY (id_venta)
     REFERENCES ventas(id_venta) ON DELETE RESTRICT ON UPDATE CASCADE,
-  INDEX idx_pago_venta (id_venta),
+  CONSTRAINT uq_pago_venta UNIQUE (id_venta),
   INDEX idx_pago_estado (estado)
 ) ENGINE=InnoDB;
 
@@ -234,11 +246,10 @@ CREATE TABLE devoluciones (
   estado        ENUM('Solicitada','Aprobada','Rechazada') NOT NULL DEFAULT 'Solicitada',
   fecha         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT chk_dev_cant CHECK (cantidad > 0),
-  CONSTRAINT fk_dev_venta FOREIGN KEY (id_venta)
-    REFERENCES ventas(id_venta) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT fk_dev_prod FOREIGN KEY (id_producto)
-    REFERENCES productos(id_producto) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT fk_dev_venta_prod FOREIGN KEY (id_venta, id_producto)
+    REFERENCES detalle_ventas(id_venta, id_producto) ON DELETE RESTRICT ON UPDATE CASCADE,
   INDEX idx_dev_venta (id_venta),
+  INDEX idx_dev_venta_prod_estado (id_venta, id_producto, estado),
   INDEX idx_dev_prod (id_producto)
 ) ENGINE=InnoDB;
 
@@ -262,6 +273,16 @@ CREATE TABLE alertas (
   atendida  BOOLEAN NOT NULL DEFAULT FALSE,
   fecha     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_alerta_tipo (tipo, atendida)
+) ENGINE=InnoDB;
+
+CREATE TABLE Auditoria_Clientes (
+  id_auditoria       INT AUTO_INCREMENT PRIMARY KEY,
+  id_cliente         INT NOT NULL,
+  campo_modificado   VARCHAR(50) NOT NULL,
+  valor_antiguo      VARCHAR(200) NULL,
+  valor_nuevo        VARCHAR(200) NULL,
+  fecha_modificacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_audcli_cliente (id_cliente, fecha_modificacion)
 ) ENGINE=InnoDB;
 
 CREATE TABLE log_clientes (
@@ -295,14 +316,16 @@ CREATE TABLE log_permisos (
 
 -- Archivo historico de ventas (sin FK: debe sobrevivir a borrados)
 CREATE TABLE ventas_archivo (
-  id_venta       INT PRIMARY KEY,
-  id_cliente     INT NOT NULL,
-  id_sucursal    INT NULL,
-  fecha_venta    TIMESTAMP NOT NULL,
-  estado         VARCHAR(20) NOT NULL,
-  total          DECIMAL(12,2) NOT NULL,
-  costo_envio    DECIMAL(12,2) NOT NULL DEFAULT 0,
-  fecha_archivo  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id_venta        INT PRIMARY KEY,
+  id_cliente      INT NOT NULL,
+  id_sucursal     INT NOT NULL,
+  fecha_venta     TIMESTAMP NOT NULL,
+  estado          VARCHAR(20) NOT NULL,
+  total           DECIMAL(12,2) NOT NULL,
+  descuento_total DECIMAL(12,2) NOT NULL DEFAULT 0,
+  costo_envio     DECIMAL(12,2) NOT NULL DEFAULT 0,
+  control_stock   ENUM('Historico','Integrado') NOT NULL DEFAULT 'Historico',
+  fecha_archivo   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_va_fecha (fecha_venta)
 ) ENGINE=InnoDB;
 
@@ -467,7 +490,68 @@ SELECT CONCAT(ELT(1 + (i MOD 10),'Juan','María','Carlos','Ana','Luis','Laura','
               ' ',
               ELT(1 + ((i * 3) MOD 10),'Pérez','Gómez','Rodríguez','López','Martínez','García','Ramírez','Torres','Díaz','Vargas')),
        CONCAT('cliente', i, '@correo.com'),
-       SHA2(CONCAT('Clave#', i), 256),
+       CASE i
+         WHEN 1 THEN '$argon2id$v=19$m=32768,t=2,p=2$uYJSEGedgLZN1qnX9IDP9w$y3vjuNp39TnJeArK8jNMfYAl+rA2hEbMrAPWZ+0tbPs'
+         WHEN 2 THEN '$argon2id$v=19$m=32768,t=2,p=2$NNYl1jmcOeWVI6oUVNLh7g$ZzSYcFD1bB1Q+j+gPnWfjQd5ugR+FXpreghKLBSwiL0'
+         WHEN 3 THEN '$argon2id$v=19$m=32768,t=2,p=2$HalhDywp0MDEvwxHmrstcQ$/UErRntgk4ByyBFuJ1afbLS6DDfRn/CyfxbaLQJkG7k'
+         WHEN 4 THEN '$argon2id$v=19$m=32768,t=2,p=2$ZYUV+2qYs5kaTxaidw0BVg$S/10sPyq6KKJHIsFIcZ58YDPYCA9NzFaqtghSCZHKmE'
+         WHEN 5 THEN '$argon2id$v=19$m=32768,t=2,p=2$+9u+L+6g6+3yuyoX06hKXA$hv7EnyOpuu3HyTND7oJxBSWqsW62QcRE17D36vUr6RU'
+         WHEN 6 THEN '$argon2id$v=19$m=32768,t=2,p=2$kvzCHCUOAocEMHincSLDQw$2QIduU+zOzzGaWJUuSPcimbxyNMXC7STYieDNKa65G0'
+         WHEN 7 THEN '$argon2id$v=19$m=32768,t=2,p=2$cRI2p+yU1r5UQEqEeCY/Wg$GfLD8Da7hVUo4BEPHQeiiXayhccNA4VEYqZnd8PAv3E'
+         WHEN 8 THEN '$argon2id$v=19$m=32768,t=2,p=2$6jTv/8/8sDWlnRxVNZI/AQ$LPUUxYXNwQklTEfDNigBZQRexPDCQ0O+9Y+gsb4YdlI'
+         WHEN 9 THEN '$argon2id$v=19$m=32768,t=2,p=2$1fmbPaJKMdIxfmWktgjv4w$3Ruyi+rjY0VKtMz2Q2igC/k2CWKSRt2+h1/D+Ev+yB4'
+         WHEN 10 THEN '$argon2id$v=19$m=32768,t=2,p=2$6944IFUCcVASWv3eoHnCtA$xz6zuFop+pHPQkpvKaAYVJQIfn1Nmn7rcDgb+928Gl4'
+         WHEN 11 THEN '$argon2id$v=19$m=32768,t=2,p=2$YMfDPnliOa/UfMV4GeZaew$0lRfOFTkR5kBYlx72AZ6OijLf6zFOBsxE7mx5DmmM5g'
+         WHEN 12 THEN '$argon2id$v=19$m=32768,t=2,p=2$6gD/khYDKhOB2Aw6by5fJw$JOAFPL9opbZ+Q3xU5P1ntJOkY3XTFcyBj0nKle+d/DI'
+         WHEN 13 THEN '$argon2id$v=19$m=32768,t=2,p=2$A9v2wv2Hnd57JDqhAtYsMg$Te9Amy++dp5vgSpWtvGD4e1ltcBpP79XmF95nTFRtrE'
+         WHEN 14 THEN '$argon2id$v=19$m=32768,t=2,p=2$3XyHbfuR78Ouz6ET8icq1w$1KPL2R7/yXkGDk2JCJqGhg/QxSl2u2Uf2e7cudEkgOk'
+         WHEN 15 THEN '$argon2id$v=19$m=32768,t=2,p=2$nxvRPOPG2Sic2JfureTdwQ$6P4RbJxyJ3uvOKNC/oIvZ3mOaxQPgXWg9Lr90wvXofU'
+         WHEN 16 THEN '$argon2id$v=19$m=32768,t=2,p=2$0+AHRuoGz7XhQp+SkthWBA$cH7HBxb/F4YyqOtKUD4QhSp/zv3izSTclrrCCCBRgQs'
+         WHEN 17 THEN '$argon2id$v=19$m=32768,t=2,p=2$aexrRWVRqzAeE8PETJeNHQ$IGokCnAjMhLcwenU8cnNq8PG62hbLvhLDAq4BB3I9WY'
+         WHEN 18 THEN '$argon2id$v=19$m=32768,t=2,p=2$xp/RLU5zSL82dvg7R5j87Q$hBqt7upFIZVgdz9Eas4BpEhCMQAFgEHRP1rmlSUeMqw'
+         WHEN 19 THEN '$argon2id$v=19$m=32768,t=2,p=2$geQw8CSJnXCDI+JdLdIXIA$NX+LdRmnUSNrc9ji5f/JCB5vI4b2S4v6u7LBKmeH1s4'
+         WHEN 20 THEN '$argon2id$v=19$m=32768,t=2,p=2$edFBAtMhqxqIEZuts7KkGQ$5bJ6Qc5I83zdESuIUXTkwoRgq7nx8lRvc8N9k5bu08Q'
+         WHEN 21 THEN '$argon2id$v=19$m=32768,t=2,p=2$Xl+vIFDqgrQvEnPZVUTjYw$tVl0acNX5/tWTlxeNICdTTZ6B3qqoBYiQrQF94ZnPpU'
+         WHEN 22 THEN '$argon2id$v=19$m=32768,t=2,p=2$GjXhURP/yrw005tkajdh2Q$lm1uHfWDMGKg+YZtDjfJiNXDuYK9NE8ZtqVUletxxI0'
+         WHEN 23 THEN '$argon2id$v=19$m=32768,t=2,p=2$ba5lJ9RnCQVIN8BxKDhsJQ$aU/C3m0vxzfc1+uUOVoFbQhNxXo0vD+YoS4U9ohksZ0'
+         WHEN 24 THEN '$argon2id$v=19$m=32768,t=2,p=2$bmYMbIIPAkxEZNaX/3D2dA$1piht6bGTzZX0uN6wKtAQGgzFp4zm1y6cFXbRHfSycA'
+         WHEN 25 THEN '$argon2id$v=19$m=32768,t=2,p=2$3XoAJ70uhoPVNWe3eWGR5Q$5l1dQtHQC9rzubz5ri/E2mYvC4TyK6kduC6J8RG20Xs'
+         WHEN 26 THEN '$argon2id$v=19$m=32768,t=2,p=2$OJVKnRWfpFpXvIKG6ei1sw$jkuHbDOi/AFcgtp1Bqs13JClGOQKoMaj+gg975xE+fg'
+         WHEN 27 THEN '$argon2id$v=19$m=32768,t=2,p=2$tsYPW0kf5O2hrTZyl414gw$D+dESHt1L1u/7Gqfa7QjW8o3+PJX9/aho9GAUei/5hM'
+         WHEN 28 THEN '$argon2id$v=19$m=32768,t=2,p=2$WpXUg38cRwK8KU3ujmEsIw$WLf3Cm5wFapxwO+Fb06DqxFX8fJLyQSgfLc5vr7wVps'
+         WHEN 29 THEN '$argon2id$v=19$m=32768,t=2,p=2$lZvcG7o3Xw5mDT09pORRsg$lCaHnSlc++RbJrWtDo+h1Am6NTf+v0uBwZwnTbfciG4'
+         WHEN 30 THEN '$argon2id$v=19$m=32768,t=2,p=2$bEgIWdhMxRX2Qbelgcr1Ng$KAJvZTuJ5mWaWLMjCMs++9kt+e2hNp9Z20pokXw0M64'
+         WHEN 31 THEN '$argon2id$v=19$m=32768,t=2,p=2$tRS5sLGLnitB1LmrF8+DSQ$H5kywiuROiIEpnuAW5yCid9+icl5oaijM/Yf4fmjuEY'
+         WHEN 32 THEN '$argon2id$v=19$m=32768,t=2,p=2$ArSEZLWCDMW1RsqyiHH6Gg$rT0NTt5fQkCyidtZ/gWr3zPrOCj/JqbbLhAoVHIeESo'
+         WHEN 33 THEN '$argon2id$v=19$m=32768,t=2,p=2$2YOZRGvxJ5+Elzjo5pVGXQ$uwCpAYy4nCb/YYzQ8RQd1mjoCFvYdw+OScxVbWyJvU4'
+         WHEN 34 THEN '$argon2id$v=19$m=32768,t=2,p=2$aIyh/wvPoJu06TJ4zA/NAw$dwopZ4JZTaaEGJZ8tkRuJQ1oXTgtdEjpWGYv28Qzuoc'
+         WHEN 35 THEN '$argon2id$v=19$m=32768,t=2,p=2$h/ASpCPWU39FWJEAPE9TvQ$DqLwg95x314GSI/1kwGpuM+0QIrdT/3Bw7BYh6jQ1sw'
+         WHEN 36 THEN '$argon2id$v=19$m=32768,t=2,p=2$EIn7AQmj67ujGpdG7YKvNA$RQOF+Jg8/U+bkzydWwV+NDiNXzJgMPZLzxAdbz0OE6I'
+         WHEN 37 THEN '$argon2id$v=19$m=32768,t=2,p=2$1JuIEyCyhd20ghdeTlkyZw$TbIoUXVJ0EJcD1QVkbITHM47wDs0V7bzfiCUnTTW94g'
+         WHEN 38 THEN '$argon2id$v=19$m=32768,t=2,p=2$eXRQRcRGykGK4u+x8QFgkw$ddXk7+Ez801kIbxl+CDnDC+yIdzeMYAgUP/3HrxE3GQ'
+         WHEN 39 THEN '$argon2id$v=19$m=32768,t=2,p=2$q4US4D1Y0+zLq++4OW3Scw$BLrye8+BALPTXny04RBmG+IYCsTXpwL5illHaFqj3Fo'
+         WHEN 40 THEN '$argon2id$v=19$m=32768,t=2,p=2$1xhnF7XjqIV6BW2GDFB7fg$gTNPoo/lpK56FHO/fdli0SWWRSVaiYTL8BE6HKJBZJ0'
+         WHEN 41 THEN '$argon2id$v=19$m=32768,t=2,p=2$YaO0dbYN6Ezh4uOTQNAaLw$0vqTWDSNh0hokVLJBYFNKHblRC8XMQbS/QMuWtdaEfQ'
+         WHEN 42 THEN '$argon2id$v=19$m=32768,t=2,p=2$RKWpW9bk922YYxjJbukcKQ$NLF9PFtf23yFMO0BsSoCYRbehttvrRNzgEsR3ZPCIGs'
+         WHEN 43 THEN '$argon2id$v=19$m=32768,t=2,p=2$OLENL+PiLqmKeCiUPQ8zBw$XhAWwNe1rOFcRMOAocw7t+utAtiiZFiNYn3NZxI1Ei0'
+         WHEN 44 THEN '$argon2id$v=19$m=32768,t=2,p=2$6ZOsHmjp+6ez7ji/kFdr5Q$ryUPDe/g7v0SwKZUPRBshTND3bDlaP9G5ZpB71pA2wU'
+         WHEN 45 THEN '$argon2id$v=19$m=32768,t=2,p=2$/xrslCWteHkzkiSBlkmBEA$WAFo1lOE03e5csURyGUj/LnyvRTYL87AUyCfevDOE/o'
+         WHEN 46 THEN '$argon2id$v=19$m=32768,t=2,p=2$PqYyuabWg3BYe78wyyhV2w$Hr/AxKBKx5qVlJ5Y2X33pa2TMgYhhrkvkByMVNd+/dM'
+         WHEN 47 THEN '$argon2id$v=19$m=32768,t=2,p=2$PoqXNPK1S80UsTzujmqL1w$G8nhpTyPicWKdkzzqj9nG5xSlnqeigjKIg1dqtOZ+rE'
+         WHEN 48 THEN '$argon2id$v=19$m=32768,t=2,p=2$7jmHdQam7UmOkxef4hTBbw$Ueo8qgEcQ/7X92wqBq8aKYsxkSBVqWbcQBBM6VV3GZQ'
+         WHEN 49 THEN '$argon2id$v=19$m=32768,t=2,p=2$qQXFjgi0gF7asgfYroW8fw$oSX3hx6hsx6HAAVUFLVfXd99OvQAp1tFEuGfua6zug0'
+         WHEN 50 THEN '$argon2id$v=19$m=32768,t=2,p=2$vqZkzFRv/im919aTsPbfYg$FgZxuS8uycfi76402VOIHT+aNxZcwgqB1RHB5gZUKsY'
+         WHEN 51 THEN '$argon2id$v=19$m=32768,t=2,p=2$8jtRX/44fkutZQM2CdUpWQ$Yb25JUx4YjzQvmkzJf4snJnAMWp6DiZCLqWoNEYNmiM'
+         WHEN 52 THEN '$argon2id$v=19$m=32768,t=2,p=2$g64LGrlshGWMl0oAqNK7xg$PrGCKMI+OvNvdBJoSbJPss/lPrrs9R/7Hx1c1QmwsY4'
+         WHEN 53 THEN '$argon2id$v=19$m=32768,t=2,p=2$pCoZxNEP7fN2PA+N11odEw$V81NqZzLtqJM1Ijn/wyhrYW8SarwVsZuAUi7JREkcxk'
+         WHEN 54 THEN '$argon2id$v=19$m=32768,t=2,p=2$DnV9BsqXBJWKJeRq+ABtPw$p+hGujaIm/AG86RIrvskisTa2jJFTwZtGzdDh6tSwr4'
+         WHEN 55 THEN '$argon2id$v=19$m=32768,t=2,p=2$ZvaeYTFbWeWlm8jBtVo2qw$R+mIfOtbc/dJU3NV2I80YAlciJMW2fFlqyAIgbYu2eQ'
+         WHEN 56 THEN '$argon2id$v=19$m=32768,t=2,p=2$QGtT72U0quwD1Tezl0Hflw$TGi2tMnlE/POnswFIhJi98DMqE+/sWvOMUaSu4xWdQc'
+         WHEN 57 THEN '$argon2id$v=19$m=32768,t=2,p=2$qmdTEBhwCqt1rcmMNwptyg$14yFv9w/EY/NQokIVJI3doqKdkee7Z86zY4Q3SQGLVA'
+         WHEN 58 THEN '$argon2id$v=19$m=32768,t=2,p=2$bUJ0Ai4cYwEwmkl2FZ6x3g$ddqP/jisgfKGs32sSmhhDFMeXA7iHY3A63lhAb/CfAk'
+         WHEN 59 THEN '$argon2id$v=19$m=32768,t=2,p=2$yScE18JryoRseNarqNJ+AA$LCQ4X49/ePPMoDqw5KaG6R/QcBBLaJl4aToKW11Yxeo'
+         WHEN 60 THEN '$argon2id$v=19$m=32768,t=2,p=2$/9VXTLuhecPAQ/vVDb+TtQ$wiVfaah0f7O18io80ZEX0RaSkR3dWZZBEwqnSrHWdTM'
+       END,
        CONCAT('Calle ', 10 + i, ' # ', (i MOD 40) + 1, '-', (i MOD 90) + 1),
        DATE_ADD('1965-01-01', INTERVAL ((i * 211) MOD 14000) DAY),
        ELT(1 + (i MOD 6),'Cúcuta','Bogotá','Medellín','Cali','Barranquilla','Bucaramanga'),
@@ -479,7 +563,7 @@ SELECT CONCAT(ELT(1 + (i MOD 10),'Juan','María','Carlos','Ana','Luis','Laura','
 
 -- 320 ventas en ~18 meses, a distintas horas y con todos los estados.
 -- El total se calcula después, a partir de las líneas.
-INSERT INTO ventas (id_cliente, id_sucursal, fecha_venta, estado, total, costo_envio)
+INSERT INTO ventas (id_cliente, id_sucursal, fecha_venta, estado, total, descuento_total, costo_envio, control_stock)
 WITH RECURSIVE n AS (SELECT 1 AS i UNION ALL SELECT i + 1 FROM n WHERE i < 320)
 SELECT c.id_cliente,
        c.id_sucursal,
@@ -487,7 +571,7 @@ SELECT c.id_cliente,
                  MAKETIME(8 + ((n.i * 5) MOD 13), (n.i * 11) MOD 60, (n.i * 13) MOD 60)),
        ELT(1 + (n.i MOD 10),'Entregado','Entregado','Entregado','Entregado','Entregado',
                             'Enviado','Pagado','Pendiente','Cancelado','Devuelto'),
-       0, 0
+       0, 0, 0, 'Historico'
   FROM n
   JOIN clientes c
     ON c.id_cliente = CASE WHEN n.i MOD 3 = 0 THEN 1 + (n.i MOD 10)
@@ -496,10 +580,15 @@ SELECT c.id_cliente,
 
 -- Líneas de venta: 1 a 5 por venta, productos 1-36 (37-40 nunca se venden).
 -- El precio congelado difiere del precio actual en ventas antiguas (10% y 5% menos).
-INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio_unitario_congelado)
+INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio_lista_congelado,
+                                descuento_unitario_congelado, precio_unitario_congelado)
 SELECT v.id_venta,
        p.id_producto,
        1 + ((v.id_venta + k.k) MOD 4),
+       ROUND(p.precio * CASE WHEN v.fecha_venta < '2026-01-01' THEN 0.90
+                             WHEN v.fecha_venta < '2026-06-01' THEN 0.95
+                             ELSE 1.00 END, 2),
+       0,
        ROUND(p.precio * CASE WHEN v.fecha_venta < '2026-01-01' THEN 0.90
                              WHEN v.fecha_venta < '2026-06-01' THEN 0.95
                              ELSE 1.00 END, 2)
@@ -527,21 +616,23 @@ UPDATE ventas v
 -- Estadísticas del cliente (se excluyen ventas canceladas del total gastado)
 UPDATE clientes c
   JOIN (SELECT id_cliente,
-               SUM(CASE WHEN estado <> 'Cancelado' THEN total ELSE 0 END) AS gastado,
-               MAX(fecha_venta) AS ultimo
+               SUM(CASE WHEN estado IN ('Pagado','Enviado','Entregado') THEN total ELSE 0 END) AS gastado,
+               MAX(CASE WHEN estado IN ('Pagado','Enviado','Entregado') THEN fecha_venta END) AS ultimo
           FROM ventas
          GROUP BY id_cliente) t ON t.id_cliente = c.id_cliente
    SET c.total_gastado = t.gastado,
        c.fecha_ultimo_pedido = t.ultimo;
 
 -- Un pago por venta: Pendiente -> Pendiente, Cancelado -> Rechazado, resto -> Aprobado
-INSERT INTO pagos (id_venta, monto, metodo, estado, referencia, fecha_pago)
+INSERT INTO pagos (id_venta, monto, metodo, estado, monto_reembolsado, referencia, fecha_pago)
 SELECT id_venta,
        total + costo_envio,
        ELT(1 + (id_venta MOD 4),'Tarjeta','PSE','Efectivo','Transferencia'),
        CASE estado WHEN 'Pendiente' THEN 'Pendiente'
                    WHEN 'Cancelado' THEN 'Rechazado'
+                   WHEN 'Devuelto' THEN 'Reembolsado'
                    ELSE 'Aprobado' END,
+       CASE WHEN estado = 'Devuelto' THEN total + costo_envio ELSE 0 END,
        CONCAT('PAY-', LPAD(id_venta, 6, '0')),
        DATE_ADD(fecha_venta, INTERVAL 5 MINUTE)
   FROM ventas;
@@ -587,14 +678,27 @@ SELECT 1 + ((i * 7) MOD 40),
   FROM n;
 
 INSERT INTO resenas_producto (id_producto, id_cliente, calificacion, comentario, fecha)
-WITH RECURSIVE n AS (SELECT 1 AS i UNION ALL SELECT i + 1 FROM n WHERE i < 60)
-SELECT 1 + ((i * 5) MOD 36),
-       1 + ((i * 3) MOD 50),
-       CASE WHEN i MOD 7 = 0 THEN 2 WHEN i MOD 5 = 0 THEN 3
-            WHEN i MOD 2 = 0 THEN 4 ELSE 5 END,
-       CONCAT('Reseña de ejemplo ', i),
-       TIMESTAMP(DATE_SUB('2026-09-15', INTERVAL ((i * 9) MOD 300) DAY), '15:00:00')
-  FROM n;
+SELECT id_producto, id_cliente,
+       CASE WHEN seq MOD 7 = 0 THEN 2
+            WHEN seq MOD 5 = 0 THEN 3
+            WHEN seq MOD 2 = 0 THEN 4
+            ELSE 5 END,
+       CONCAT('Reseña de ejemplo ', seq),
+       DATE_ADD(fecha_venta, INTERVAL 2 DAY)
+  FROM (
+    SELECT d.id_producto, v.id_cliente, v.fecha_venta,
+           ROW_NUMBER() OVER (
+             PARTITION BY d.id_producto, v.id_cliente
+             ORDER BY v.fecha_venta DESC, v.id_venta DESC
+           ) AS rn,
+           ROW_NUMBER() OVER (ORDER BY v.id_venta, d.id_producto) AS seq
+      FROM detalle_ventas d
+      JOIN ventas v ON v.id_venta = d.id_venta
+     WHERE v.estado = 'Entregado'
+  ) candidatos
+ WHERE rn = 1
+ ORDER BY seq
+ LIMIT 60;
 
 INSERT INTO ajustes_stock (id_producto, cantidad_ajuste, motivo, usuario) VALUES
  (5,-2,'Merma por daño en bodega','inventory_user'),
@@ -612,27 +716,63 @@ INSERT INTO usuario_sucursal (usuario, id_sucursal) VALUES
 -- =====================================================================
 
 -- Vista sin email, contraseña ni dirección (se concede a Atencion_Cliente en 04)
-CREATE OR REPLACE VIEW v_info_clientes_basica AS
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_info_clientes_basica AS
 SELECT id_cliente, nombre, ciudad, region, id_sucursal,
        total_gastado, fecha_ultimo_pedido, activo
   FROM clientes;
 
 -- Acceso por sucursal: cada usuario ve solo la sucursal asignada en usuario_sucursal
-CREATE OR REPLACE SQL SECURITY DEFINER VIEW v_ventas_sucursal AS
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_ventas_sucursal AS
 SELECT v.id_venta, v.id_cliente, v.id_sucursal, v.fecha_venta,
-       v.estado, v.total, v.costo_envio
+       v.estado, v.total, v.descuento_total, v.costo_envio
   FROM ventas v
  WHERE v.id_sucursal = (SELECT us.id_sucursal
                           FROM usuario_sucursal us
                          WHERE us.usuario = SUBSTRING_INDEX(USER(), '@', 1));
 
-CREATE OR REPLACE SQL SECURITY DEFINER VIEW v_clientes_sucursal AS
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_clientes_sucursal AS
 SELECT c.id_cliente, c.nombre, c.ciudad, c.region, c.id_sucursal,
        c.total_gastado, c.fecha_ultimo_pedido, c.activo
   FROM clientes c
  WHERE c.id_sucursal = (SELECT us.id_sucursal
                           FROM usuario_sucursal us
                          WHERE us.usuario = SUBSTRING_INDEX(USER(), '@', 1));
+
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_devoluciones_sucursal AS
+SELECT d.id_devolucion, d.id_venta, d.id_producto, d.cantidad, d.motivo, d.estado, d.fecha
+  FROM devoluciones d
+  JOIN ventas v ON v.id_venta = d.id_venta
+ WHERE v.id_sucursal = (SELECT us.id_sucursal
+                           FROM usuario_sucursal us
+                          WHERE us.usuario = SUBSTRING_INDEX(USER(), '@', 1));
+
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_resenas_publicas AS
+SELECT r.id_resena, r.id_producto, r.calificacion, r.comentario, r.fecha
+  FROM resenas_producto r;
+
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_comportamiento_marketing AS
+SELECT vp.id_producto, DATE(vp.fecha_vista) AS dia,
+       COUNT(*) AS vistas,
+       COUNT(DISTINCT vp.id_cliente) AS visitantes_identificados
+  FROM vistas_producto vp
+ GROUP BY vp.id_producto, DATE(vp.fecha_vista);
+
+-- Vistas de explotación analítica sin PII sensible ni credenciales.
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_ventas_analista AS
+SELECT v.id_venta, v.id_sucursal, v.fecha_venta, v.estado,
+       v.total, v.descuento_total, v.costo_envio
+  FROM ventas v;
+
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_detalle_ventas_analista AS
+SELECT d.id_venta, d.id_producto, d.cantidad,
+       d.precio_lista_congelado, d.descuento_unitario_congelado,
+       d.precio_unitario_congelado
+  FROM detalle_ventas d;
+
+CREATE OR REPLACE DEFINER='root'@'localhost' SQL SECURITY DEFINER VIEW v_clientes_analista AS
+SELECT c.id_cliente, c.ciudad, c.region, c.id_sucursal,
+       c.total_gastado, c.fecha_ultimo_pedido, c.activo, c.fecha_registro
+  FROM clientes c;
 
 -- =====================================================================
 -- 5. VERIFICACION (comentada): conteo de filas por tabla
