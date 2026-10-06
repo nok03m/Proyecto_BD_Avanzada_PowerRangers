@@ -12,11 +12,11 @@ DELIMITER $$
 
 -- ---------------------------------------------------------------------
 -- 1. fn_CalcularTotalVenta
--- Propósito: suma de las líneas de una venta (cantidad * precio congelado).
+-- Propósito: subtotal de líneas menos el descuento total de la venta (COP netos cobrados).
 -- Parámetros: p_id_venta INT. Retorna: DECIMAL(12,2); NULL si la venta no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_CalcularTotalVenta$$
-CREATE FUNCTION fn_CalcularTotalVenta(p_id_venta INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_CalcularTotalVenta(p_id_venta INT)
 RETURNS DECIMAL(12,2)
 READS SQL DATA
 BEGIN
@@ -24,9 +24,16 @@ BEGIN
   IF p_id_venta IS NULL OR NOT EXISTS (SELECT 1 FROM ventas WHERE id_venta = p_id_venta) THEN
     RETURN NULL;
   END IF;
-  SELECT COALESCE(SUM(cantidad * precio_unitario_congelado), 0) INTO v_total
-    FROM detalle_ventas WHERE id_venta = p_id_venta;
-  RETURN v_total;
+  SELECT GREATEST(
+           ROUND(COALESCE(SUM(d.cantidad * d.precio_unitario_congelado), 0) - v.descuento_total, 2),
+           0
+         )
+    INTO v_total
+    FROM ventas v
+    LEFT JOIN detalle_ventas d ON d.id_venta = v.id_venta
+   WHERE v.id_venta = p_id_venta
+   GROUP BY v.id_venta, v.descuento_total;
+  RETURN COALESCE(v_total, 0);
 END$$
 -- Ejemplo: SELECT fn_CalcularTotalVenta(1);
 
@@ -36,7 +43,7 @@ END$$
 -- Parámetros: p_monto DECIMAL(12,2). Retorna: DECIMAL(12,2); NULL si es negativo o nulo.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_CalcularIVA$$
-CREATE FUNCTION fn_CalcularIVA(p_monto DECIMAL(12,2))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_CalcularIVA(p_monto DECIMAL(12,2))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC NO SQL
 BEGIN
@@ -51,7 +58,7 @@ END$$
 -- Parámetros: p_precio DECIMAL(12,2). Retorna: DECIMAL(12,2); NULL si es inválido.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_PrecioSinIVA$$
-CREATE FUNCTION fn_PrecioSinIVA(p_precio DECIMAL(12,2))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_PrecioSinIVA(p_precio DECIMAL(12,2))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC NO SQL
 BEGIN
@@ -66,7 +73,7 @@ END$$
 -- Parámetros: p_monto_cop DECIMAL(14,2). Retorna: DECIMAL(14,2); NULL si es inválido.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_ConvertirCOPaUSD$$
-CREATE FUNCTION fn_ConvertirCOPaUSD(p_monto_cop DECIMAL(14,2))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_ConvertirCOPaUSD(p_monto_cop DECIMAL(14,2))
 RETURNS DECIMAL(14,2)
 DETERMINISTIC NO SQL
 BEGIN
@@ -81,7 +88,7 @@ END$$
 -- Parámetros: p_peso_kg DECIMAL(10,3). Retorna: DECIMAL(12,2); NULL si el peso es negativo/nulo.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_CostoEnvio$$
-CREATE FUNCTION fn_CostoEnvio(p_peso_kg DECIMAL(10,3))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_CostoEnvio(p_peso_kg DECIMAL(10,3))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC NO SQL
 BEGIN
@@ -99,7 +106,7 @@ END$$
 -- Parámetros: p_id_venta INT. Retorna: DECIMAL(10,3); NULL si la venta no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_PesoTotalVenta$$
-CREATE FUNCTION fn_PesoTotalVenta(p_id_venta INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_PesoTotalVenta(p_id_venta INT)
 RETURNS DECIMAL(10,3)
 READS SQL DATA
 BEGIN
@@ -121,7 +128,7 @@ END$$
 -- Parámetros: p_id_producto INT. Retorna: DECIMAL(6,2); NULL si el producto no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_MargenProducto$$
-CREATE FUNCTION fn_MargenProducto(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_MargenProducto(p_id_producto INT)
 RETURNS DECIMAL(6,2)
 READS SQL DATA
 BEGIN
@@ -137,16 +144,16 @@ END$$
 -- ---------------------------------------------------------------------
 -- 8. fn_PrecioConDescuento
 -- Propósito: aplica un descuento porcentual a un precio.
--- Parámetros: p_precio DECIMAL(12,2), p_porcentaje DECIMAL(5,2) (0-100).
+-- Parámetros: p_precio DECIMAL(12,2), p_porcentaje DECIMAL(5,2) (0-<100).
 -- Retorna: DECIMAL(12,2); NULL si algún parámetro es inválido.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_PrecioConDescuento$$
-CREATE FUNCTION fn_PrecioConDescuento(p_precio DECIMAL(12,2), p_porcentaje DECIMAL(5,2))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_PrecioConDescuento(p_precio DECIMAL(12,2), p_porcentaje DECIMAL(5,2))
 RETURNS DECIMAL(12,2)
 DETERMINISTIC NO SQL
 BEGIN
   IF p_precio IS NULL OR p_precio <= 0
-     OR p_porcentaje IS NULL OR p_porcentaje < 0 OR p_porcentaje > 100 THEN
+     OR p_porcentaje IS NULL OR p_porcentaje < 0 OR p_porcentaje >= 100 THEN
     RETURN NULL;
   END IF;
   RETURN ROUND(p_precio * (1 - p_porcentaje / 100), 2);
@@ -160,7 +167,7 @@ END$$
 -- Parámetros: p_id_producto INT. Retorna: INT (mínimo 0); NULL si no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_StockDisponible$$
-CREATE FUNCTION fn_StockDisponible(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_StockDisponible(p_id_producto INT)
 RETURNS INT
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
@@ -185,7 +192,7 @@ END$$
 -- Parámetros: p_id_producto INT. Retorna: TINYINT (1 sí, 0 no); NULL si no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_EsStockBajo$$
-CREATE FUNCTION fn_EsStockBajo(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_EsStockBajo(p_id_producto INT)
 RETURNS TINYINT
 READS SQL DATA
 BEGIN
@@ -202,7 +209,7 @@ END$$
 -- Parámetros: p_id_cliente INT. Retorna: INT; NULL si no existe o sin fecha de nacimiento.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_EdadCliente$$
-CREATE FUNCTION fn_EdadCliente(p_id_cliente INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_EdadCliente(p_id_cliente INT)
 RETURNS INT
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
@@ -216,11 +223,11 @@ END$$
 
 -- ---------------------------------------------------------------------
 -- 12. fn_TotalGastadoCliente
--- Propósito: gasto total del cliente en ventas NO canceladas (recalculado desde ventas).
+-- Propósito: gasto total del cliente en ventas pagadas/enviadas/entregadas (recalculado desde ventas).
 -- Parámetros: p_id_cliente INT. Retorna: DECIMAL(12,2); NULL si el cliente no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_TotalGastadoCliente$$
-CREATE FUNCTION fn_TotalGastadoCliente(p_id_cliente INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_TotalGastadoCliente(p_id_cliente INT)
 RETURNS DECIMAL(12,2)
 READS SQL DATA
 BEGIN
@@ -229,7 +236,7 @@ BEGIN
     RETURN NULL;
   END IF;
   SELECT COALESCE(SUM(total), 0) INTO v_total
-    FROM ventas WHERE id_cliente = p_id_cliente AND estado <> 'Cancelado';
+    FROM ventas WHERE id_cliente = p_id_cliente AND estado IN ('Pagado','Enviado','Entregado');
   RETURN v_total;
 END$$
 -- Ejemplo: SELECT fn_TotalGastadoCliente(1);
@@ -240,7 +247,7 @@ END$$
 -- Parámetros: p_id_cliente INT. Retorna: VARCHAR(10); NULL si el cliente no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_NivelCliente$$
-CREATE FUNCTION fn_NivelCliente(p_id_cliente INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_NivelCliente(p_id_cliente INT)
 RETURNS VARCHAR(10)
 READS SQL DATA
 BEGIN
@@ -260,7 +267,7 @@ END$$
 -- Parámetros: p_id_cliente INT. Retorna: INT; NULL si no existe o nunca compró.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_DiasDesdeUltimoPedido$$
-CREATE FUNCTION fn_DiasDesdeUltimoPedido(p_id_cliente INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_DiasDesdeUltimoPedido(p_id_cliente INT)
 RETURNS INT
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
@@ -278,7 +285,7 @@ END$$
 -- Parámetros: p_id_producto INT. Retorna: DECIMAL(3,2); NULL si no hay reseñas.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_CalificacionPromedio$$
-CREATE FUNCTION fn_CalificacionPromedio(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_CalificacionPromedio(p_id_producto INT)
 RETURNS DECIMAL(3,2)
 READS SQL DATA
 BEGIN
@@ -292,11 +299,11 @@ END$$
 
 -- ---------------------------------------------------------------------
 -- 16. fn_UnidadesVendidas
--- Propósito: unidades vendidas de un producto en ventas no canceladas.
+-- Propósito: unidades vendidas de un producto en ventas pagadas/enviadas/entregadas.
 -- Parámetros: p_id_producto INT. Retorna: INT; NULL si el producto no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_UnidadesVendidas$$
-CREATE FUNCTION fn_UnidadesVendidas(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_UnidadesVendidas(p_id_producto INT)
 RETURNS INT
 READS SQL DATA
 BEGIN
@@ -306,7 +313,7 @@ BEGIN
   END IF;
   SELECT COALESCE(SUM(d.cantidad), 0) INTO v_unidades
     FROM detalle_ventas d
-    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
    WHERE d.id_producto = p_id_producto;
   RETURN v_unidades;
 END$$
@@ -319,7 +326,7 @@ END$$
 -- Parámetros: p_id_producto INT, p_fecha DATE. Retorna: DECIMAL(5,2); 0 si no hay; NULL si no existe.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_PromocionVigente$$
-CREATE FUNCTION fn_PromocionVigente(p_id_producto INT, p_fecha DATE)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_PromocionVigente(p_id_producto INT, p_fecha DATE)
 RETURNS DECIMAL(5,2)
 READS SQL DATA
 BEGIN
@@ -328,11 +335,20 @@ BEGIN
   IF p_id_producto IS NULL OR p_fecha IS NULL THEN RETURN NULL; END IF;
   SELECT id_categoria INTO v_cat FROM productos WHERE id_producto = p_id_producto;
   IF v_cat IS NULL THEN RETURN NULL; END IF;
-  SELECT COALESCE(MAX(valor), 0) INTO v_desc
-    FROM promociones
-   WHERE activa = TRUE AND tipo = 'Porcentaje'
-     AND p_fecha BETWEEN fecha_inicio AND fecha_fin
-     AND (id_categoria IS NULL OR id_categoria = v_cat);
+  WITH RECURSIVE categorias_aplicables AS (
+    SELECT id_categoria, id_categoria_padre
+      FROM categorias
+     WHERE id_categoria = v_cat
+    UNION ALL
+    SELECT c.id_categoria, c.id_categoria_padre
+      FROM categorias c
+      JOIN categorias_aplicables a ON c.id_categoria = a.id_categoria_padre
+  )
+  SELECT COALESCE(MAX(p.valor), 0) INTO v_desc
+    FROM promociones p
+   WHERE p.activa = TRUE AND p.tipo = 'Porcentaje'
+     AND p_fecha BETWEEN p.fecha_inicio AND p.fecha_fin
+     AND (p.id_categoria IS NULL OR p.id_categoria IN (SELECT id_categoria FROM categorias_aplicables));
   RETURN v_desc;
 END$$
 -- Ejemplo: SELECT fn_PromocionVigente(3, CURDATE());
@@ -343,7 +359,7 @@ END$$
 -- Parámetros: p_email VARCHAR(120). Retorna: TINYINT (1 válido, 0 inválido); NULL si es nulo.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_ValidarEmail$$
-CREATE FUNCTION fn_ValidarEmail(p_email VARCHAR(120))
+CREATE DEFINER='root'@'localhost' FUNCTION fn_ValidarEmail(p_email VARCHAR(120))
 RETURNS TINYINT
 DETERMINISTIC NO SQL
 BEGIN
@@ -358,7 +374,7 @@ END$$
 -- Parámetros: p_id_cliente INT, p_fecha DATE. Retorna: TINYINT; NULL si faltan datos.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_EsCumpleanos$$
-CREATE FUNCTION fn_EsCumpleanos(p_id_cliente INT, p_fecha DATE)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_EsCumpleanos(p_id_cliente INT, p_fecha DATE)
 RETURNS TINYINT
 READS SQL DATA
 BEGIN
@@ -376,7 +392,7 @@ END$$
 -- Parámetros: p_id_producto INT. Retorna: DECIMAL(10,1); NULL si no existe o no tuvo ventas.
 -- ---------------------------------------------------------------------
 DROP FUNCTION IF EXISTS fn_DiasParaAgotar$$
-CREATE FUNCTION fn_DiasParaAgotar(p_id_producto INT)
+CREATE DEFINER='root'@'localhost' FUNCTION fn_DiasParaAgotar(p_id_producto INT)
 RETURNS DECIMAL(10,1)
 NOT DETERMINISTIC READS SQL DATA
 BEGIN
@@ -387,7 +403,7 @@ BEGIN
   IF v_stock IS NULL THEN RETURN NULL; END IF;
   SELECT COALESCE(SUM(d.cantidad), 0) INTO v_unidades
     FROM detalle_ventas d
-    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado <> 'Cancelado'
+    JOIN ventas v ON v.id_venta = d.id_venta AND v.estado IN ('Pagado','Enviado','Entregado')
    WHERE d.id_producto = p_id_producto
      AND v.fecha_venta >= DATE_SUB(NOW(), INTERVAL 90 DAY);
   IF v_unidades = 0 THEN RETURN NULL; END IF;
